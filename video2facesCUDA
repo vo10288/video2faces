@@ -1,3 +1,11 @@
+#!/opt/virtualenv/computer_vision/bin/python3
+
+# 20250605-H19.30
+# https://tsurugi-linux.org
+# by Visi@n
+# LICENSE
+# THIS SCRIPT HAS BEEN CREATED BY Antonio 'Visi@n' Broi [antonio@tsurugi-linux.org] and it's licensed under the MIT License
+
 import face_recognition
 import cv2
 import time
@@ -8,8 +16,12 @@ import os
 import csv
 import numpy as np
 from sklearn.cluster import DBSCAN
+import subprocess
+import json
+import sys
 
-# === UTILITY ===
+# === FUNZIONI UTILI ===
+
 def parse_time_string(time_str):
     h, m, s = map(int, time_str.split(":"))
     return h * 3600 + m * 60 + s
@@ -18,7 +30,7 @@ def ensure_dir(path):
     if not os.path.exists(path):
         os.makedirs(path)
 
-def save_face_by_cluster(face_encoding, face_image, timestamp, frame_number, base_dir, cluster_id):
+def save_face_by_cluster(face_image, timestamp, frame_number, base_dir, cluster_id):
     person_dir = os.path.join(base_dir, f"person_{cluster_id}")
     ensure_dir(person_dir)
     filename = f"{int(timestamp)}s_{frame_number}.jpg"
@@ -26,62 +38,86 @@ def save_face_by_cluster(face_encoding, face_image, timestamp, frame_number, bas
     Image.fromarray(face_image).save(save_path)
     return save_path
 
-# === ARGOMENTI ===
+def probe_video_info(video_path):
+    try:
+        result = subprocess.run(
+            ['ffprobe', '-v', 'error', '-select_streams', 'v:0',
+             '-show_entries', 'stream=duration,r_frame_rate', '-of', 'json', video_path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        info = json.loads(result.stdout)
+        if "streams" in info and len(info["streams"]) > 0:
+            stream = info["streams"][0]
+            duration = float(stream.get("duration", 0))
+            rate = stream.get("r_frame_rate", "25/1")
+            num, den = map(int, rate.split("/"))
+            fps = num / den if den != 0 else 0
+            return duration, fps
+        else:
+            return None, None
+    except Exception as e:
+        print(f"❌ Errore in ffprobe: {e}")
+        return None, None
+
+# === PARSE ARGOMENTI ===
 ap = argparse.ArgumentParser()
-ap.add_argument("-i", "--input", required=True, help="Video file di input")
+ap.add_argument("-i", "--input", required=True, help="File video di input")
 ap.add_argument("-o", "--output", required=True, help="Directory di output")
-ap.add_argument("--start", type=str, default="00:00:00", help="Inizio (hh:mm:ss)")
-ap.add_argument("--finish", type=str, help="Fine (hh:mm:ss)")
+ap.add_argument("--start", type=str, default="00:00:00", help="Inizio analisi (hh:mm:ss)")
+ap.add_argument("--finish", type=str, help="Fine analisi (hh:mm:ss)")
 ap.add_argument("--use-cuda", action="store_true", help="Usa CUDA per CNN")
 args = vars(ap.parse_args())
 
-# === PERCORSI E LOG ===
-faces_root = os.path.join(args["output"], "faces")
-frames_root = os.path.join(args["output"], "frames")
-annotated_root = os.path.join(args["output"], "annotated_frames")
-log_csv = os.path.join(args["output"], "log.csv")
-ensure_dir(faces_root)
-ensure_dir(frames_root)
-ensure_dir(annotated_root)
+# === CONTROLLO VIDEO CON FFMPEG ===
+duration, fps = probe_video_info(args["input"])
+if duration is None or fps == 0:
+    print("❌ Errore: impossibile leggere il video o FPS non valido.")
+    sys.exit(1)
 
-# === VIDEO ===
+# === SETUP ===
 video = cv2.VideoCapture(args["input"])
-fps = video.get(cv2.CAP_PROP_FPS)
-total_frames = int(video.get(cv2.CAP_PROP_FRAME_COUNT))
-duration = total_frames / fps
-video_name = os.path.basename(args["input"])
+if not video.isOpened():
+    print(f"❌ Errore: impossibile aprire il video {args['input']}")
+    sys.exit(1)
 
 start_sec = parse_time_string(args["start"])
 end_sec = parse_time_string(args["finish"]) if args["finish"] else duration
 start_frame = int(start_sec * fps)
 end_frame = int(end_sec * fps)
-
+video.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+total_frames = int(video.get(cv2.CAP_PROP_FRAME_COUNT))
+video_name = os.path.basename(args["input"])
 model_type = "cnn" if args["use_cuda"] else "hog"
-print(f"📼 Video: {video_name} | FPS: {fps:.2f}")
-print(f"⏩ Analisi da {args['start']} a {args['finish'] or 'fine'} con modello: {model_type.upper()}")
+
+# === OUTPUT PATHS ===
+faces_root = os.path.join(args["output"], "faces")
+frames_root = os.path.join(args["output"], "frames")
+annotated_root = os.path.join(args["output"], "annotated_frames")
+log_csv = os.path.join(args["output"], "log.csv")
+for path in [faces_root, frames_root, annotated_root]:
+    ensure_dir(path)
 
 # === LOG CSV ===
 csv_file = open(log_csv, mode='w', newline='')
 csv_writer = csv.writer(csv_file)
-csv_writer.writerow(["video", "timestamp", "top", "right", "bottom", "left", "cluster", "face_path", "frame_path", "annotated_frame_path"])
+csv_writer.writerow(["video", "timestamp", "top", "right", "bottom", "left", "cluster", "face_path", "frame_path", "annotated_path"])
 
-# === ANALISI ===
-frame_number = 0
+# === PROCESSO ===
+frame_number = start_frame
 face_encodings = []
 face_images = []
 face_info = []
-
-video.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
 start_time = time.time()
+
+print(f"\n🎥 Video: {video_name} | FPS: {fps:.2f}")
+print(f"⏩ Analisi da {args['start']} a {args['finish'] or 'fine'} | Modello: {model_type.upper()}")
 
 while frame_number <= end_frame:
     ret, frame = video.read()
     if not ret:
         break
-
-    if frame_number < start_frame:
-        frame_number += 1
-        continue
 
     timestamp_sec = frame_number / fps
     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -90,7 +126,7 @@ while frame_number <= end_frame:
     locations = face_recognition.face_locations(rgb_frame, model=model_type)
     encodings = face_recognition.face_encodings(rgb_frame, locations)
 
-    print(f"[Frame {frame_number}/{end_frame}] ⏱ {timestamp_sec:.2f}s - Volti: {len(locations)}")
+    print(f"[Frame {frame_number}/{int(end_frame)}] ⏱ {timestamp_sec:.2f}s - Volti trovati: {len(locations)}")
 
     for i, (top, right, bottom, left) in enumerate(locations):
         face_img = rgb_frame[top:bottom, left:right]
@@ -98,8 +134,7 @@ while frame_number <= end_frame:
         face_encodings.append(encodings[i])
         face_info.append((timestamp_sec, frame_number, (top, right, bottom, left), frame.copy()))
 
-    # Mostra anteprima live
-    for (top, right, bottom, left) in locations:
+        # Disegna per anteprima
         cv2.rectangle(annotated_frame, (left, top), (right, bottom), (0, 0, 255), 2)
 
     cv2.imshow("Anteprima", annotated_frame)
@@ -109,7 +144,7 @@ while frame_number <= end_frame:
     frame_number += 1
 
 # === CLUSTERING ===
-print("\n🤖 Clustering volti per persona...")
+print("\n🤖 Clustering dei volti per persona...")
 if face_encodings:
     X = np.array(face_encodings)
     clustering = DBSCAN(metric="euclidean", eps=0.6, min_samples=1).fit(X)
@@ -121,16 +156,11 @@ for idx, (encoding, face_img, info) in enumerate(zip(face_encodings, face_images
     timestamp, frame_num, (top, right, bottom, left), full_frame = info
     cluster_id = clustering.labels_[idx] if clustering else 0
 
-    # Salva volto
-    face_path = save_face_by_cluster(encoding, face_img, timestamp, frame_num, faces_root, cluster_id)
-
-    # Salva frame originale
-    frame_path = save_face_by_cluster(encoding, cv2.cvtColor(full_frame, cv2.COLOR_BGR2RGB), timestamp, frame_num, frames_root, cluster_id)
-
-    # Salva frame annotato
+    face_path = save_face_by_cluster(face_img, timestamp, frame_num, faces_root, cluster_id)
+    frame_path = save_face_by_cluster(cv2.cvtColor(full_frame, cv2.COLOR_BGR2RGB), timestamp, frame_num, frames_root, cluster_id)
     annotated = full_frame.copy()
     cv2.rectangle(annotated, (left, top), (right, bottom), (0, 0, 255), 2)
-    annotated_path = save_face_by_cluster(encoding, annotated, timestamp, frame_num, annotated_root, cluster_id)
+    annotated_path = save_face_by_cluster(annotated, timestamp, frame_num, annotated_root, cluster_id)
 
     csv_writer.writerow([
         video_name,
@@ -142,10 +172,10 @@ for idx, (encoding, face_img, info) in enumerate(zip(face_encodings, face_images
         annotated_path
     ])
 
-# === FINE ===
 video.release()
 csv_file.close()
 cv2.destroyAllWindows()
 elapsed = time.time() - start_time
+
 print(f"\n✅ Completato in {elapsed:.1f}s")
 print(f"📝 Log CSV: {log_csv}")
