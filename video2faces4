@@ -1,0 +1,123 @@
+#!/opt/virtualenv/computer_vision/bin/python3
+
+
+# 20250607-2130
+# https://tsurugi-linux.org
+#
+# by Visi@n
+# LICENSE:
+# THIS SCRIPT USE FACE_RECOGNITION LIBRARY [https://github.com/ageitgey/face_recognition/blob/master/LICENSE]
+# THIS SCRIPT HAS BEEN MODIFIED BY Antonio 'Visi@n' Broi [antonio@tsurugi-linux.org] and it's licensed under the MIT License
+
+# Example: video2faces.py -i video.mp4 -o outputFaces/
+
+import face_recognition
+import cv2
+import time
+from PIL import Image
+from datetime import datetime
+import argparse
+import os
+import csv
+
+# === PARSE ARGOMENTI ===
+ap = argparse.ArgumentParser()
+ap.add_argument("-i", "--input", required=True, help="File video di input")
+ap.add_argument("-o", "--output", required=True, help="Directory di output")
+args = vars(ap.parse_args())
+
+# === PERCORSI OUTPUT ===
+output_faces_dir = os.path.join(args["output"], "faces")
+output_frames_dir = os.path.join(args["output"], "frames")
+output_annotated_dir = os.path.join(args["output"], "annotated_frames")
+log_csv_path = os.path.join(args["output"], "log.csv")
+
+os.makedirs(output_faces_dir, exist_ok=True)
+os.makedirs(output_frames_dir, exist_ok=True)
+os.makedirs(output_annotated_dir, exist_ok=True)
+
+# === LOG CSV ===
+csv_file = open(log_csv_path, mode='w', newline='')
+csv_writer = csv.writer(csv_file)
+csv_writer.writerow(["video", "timestamp_seconds", "top", "right", "bottom", "left", "face_path", "frame_path", "annotated_frame_path"])
+
+# === VIDEO ===
+video_capture = cv2.VideoCapture(args["input"])
+fps = video_capture.get(cv2.CAP_PROP_FPS)
+total_frames = int(video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
+video_name = os.path.basename(args["input"])
+
+start_time = time.time()
+frame_number = 0
+
+print(f"\n🎥 Video: {video_name}")
+print(f"🎞️ FPS: {fps:.2f} | Frame totali: {total_frames}")
+print("🚀 Inizio elaborazione...\n")
+
+while True:
+    ret, frame = video_capture.read()
+    if not ret:
+        print("✅ Fine del video.")
+        break
+
+    timestamp_sec = frame_number / fps
+    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+    face_locations = face_recognition.face_locations(rgb_frame, number_of_times_to_upsample=0, model="cnn")
+
+    print(f"[Frame {frame_number+1}/{total_frames}] ⏱ {timestamp_sec:.2f}s - Volti trovati: {len(face_locations)}")
+
+    # Disegna i volti su una copia del frame
+    annotated_frame = frame.copy()
+
+    for face_location in face_locations:
+        top, right, bottom, left = face_location
+
+        # Estrai volto
+        face_image = rgb_frame[top:bottom, left:right]
+        pil_face = Image.fromarray(face_image)
+        face_filename = f"face_{int(timestamp_sec)}s_{frame_number}.jpg"
+        face_path = os.path.join(output_faces_dir, face_filename)
+        pil_face.save(face_path)
+
+        # Disegna rettangolo sul frame annotato
+        cv2.rectangle(annotated_frame, (left, top), (right, bottom), (0, 0, 255), 2)
+
+        # Salva log
+        frame_filename = f"frame_{int(timestamp_sec)}s_{frame_number}.jpg"
+        frame_path = os.path.join(output_frames_dir, frame_filename)
+        Image.fromarray(rgb_frame).save(frame_path)
+
+        annotated_filename = f"annotated_{int(timestamp_sec)}s_{frame_number}.jpg"
+        annotated_path = os.path.join(output_annotated_dir, annotated_filename)
+        cv2.imwrite(annotated_path, annotated_frame)
+
+        csv_writer.writerow([
+            video_name,
+            round(timestamp_sec, 2),
+            top, right, bottom, left,
+            face_path,
+            frame_path,
+            annotated_path
+        ])
+
+    # Mostra anteprima
+    cv2.imshow("Anteprima Video con Volti", annotated_frame)
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        print("⏹ Interrotto manualmente.")
+        break
+
+    # Statistiche
+    elapsed = time.time() - start_time
+    avg_time = elapsed / (frame_number + 1)
+    remaining_time = (total_frames - frame_number - 1) * avg_time
+    print(f"⏳ Trascorso: {elapsed:.1f}s | Rimanente stimato: {remaining_time:.1f}s | Completato: {((frame_number+1)/total_frames)*100:.2f}%\n")
+
+    frame_number += 1
+
+# === CHIUSURA ===
+video_capture.release()
+csv_file.close()
+cv2.destroyAllWindows()
+print(f"\n📄 Log completo salvato in: {log_csv_path}")
+print(f"🖼️ Frame annotati in: {output_annotated_dir}")

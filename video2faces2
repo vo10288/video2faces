@@ -1,0 +1,82 @@
+#!/opt/virtualenv/computer_vision/bin/python3
+
+import face_recognition
+import cv2
+import time
+from PIL import Image
+from datetime import datetime
+import argparse
+import os
+import csv
+
+# Argomenti da riga di comando
+ap = argparse.ArgumentParser()
+ap.add_argument("-i", "--input", required=True, help="Input video file")
+ap.add_argument("-o", "--output", required=True, help="Output directory")
+args = vars(ap.parse_args())
+
+# Crea cartelle
+output_faces_dir = os.path.join(args["output"], "faces")
+output_frames_dir = os.path.join(args["output"], "frames")
+log_csv_path = os.path.join(args["output"], "log.csv")
+os.makedirs(output_faces_dir, exist_ok=True)
+os.makedirs(output_frames_dir, exist_ok=True)
+
+# Apri CSV per logging
+csv_file = open(log_csv_path, mode='w', newline='')
+csv_writer = csv.writer(csv_file)
+csv_writer.writerow(["video", "timestamp_seconds", "top", "right", "bottom", "left", "face_path", "frame_path"])
+
+# Apri video
+video_capture = cv2.VideoCapture(args["input"])
+fps = video_capture.get(cv2.CAP_PROP_FPS)
+frame_number = 0
+video_name = os.path.basename(args["input"])
+
+while True:
+    ret, frame = video_capture.read()
+    if not ret:
+        break
+
+    timestamp_sec = frame_number / fps
+    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+    face_locations = face_recognition.face_locations(rgb_frame, number_of_times_to_upsample=0, model="cnn")
+
+    for face_location in face_locations:
+        top, right, bottom, left = face_location
+
+        # Estrai il volto
+        face_image = rgb_frame[top:bottom, left:right]
+        pil_face = Image.fromarray(face_image)
+
+        # Salva il volto
+        face_filename = f"face_{int(timestamp_sec)}s_{frame_number}.jpg"
+        face_path = os.path.join(output_faces_dir, face_filename)
+        pil_face.save(face_path)
+
+        # Salva il frame intero
+        frame_filename = f"frame_{int(timestamp_sec)}s_{frame_number}.jpg"
+        frame_path = os.path.join(output_frames_dir, frame_filename)
+        Image.fromarray(rgb_frame).save(frame_path)
+
+        # Scrivi nel log
+        csv_writer.writerow([
+            video_name,
+            round(timestamp_sec, 2),
+            top, right, bottom, left,
+            face_path,
+            frame_path
+        ])
+
+    frame_number += 1
+
+    # Mostra il frame se vuoi (opzionale)
+    # cv2.imshow("frame", frame)
+    # if cv2.waitKey(1) & 0xFF == ord('q'):
+    #     break
+
+video_capture.release()
+csv_file.close()
+cv2.destroyAllWindows()
+print(f"[✔] Estrazione completata. Log salvato in: {log_csv_path}")

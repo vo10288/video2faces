@@ -1,0 +1,96 @@
+#!/opt/virtualenv/computer_vision/bin/python3
+
+import face_recognition
+import cv2
+import time
+from PIL import Image
+from datetime import datetime
+import argparse
+import os
+import csv
+from tqdm import tqdm
+
+# Argomenti da riga di comando
+ap = argparse.ArgumentParser()
+ap.add_argument("-i", "--input", required=True, help="Input video file")
+ap.add_argument("-o", "--output", required=True, help="Output directory")
+args = vars(ap.parse_args())
+
+# Percorsi e cartelle
+output_faces_dir = os.path.join(args["output"], "faces")
+output_frames_dir = os.path.join(args["output"], "frames")
+log_csv_path = os.path.join(args["output"], "log.csv")
+os.makedirs(output_faces_dir, exist_ok=True)
+os.makedirs(output_frames_dir, exist_ok=True)
+
+# Apri CSV per log
+csv_file = open(log_csv_path, mode='w', newline='')
+csv_writer = csv.writer(csv_file)
+csv_writer.writerow(["video", "timestamp_seconds", "top", "right", "bottom", "left", "face_path", "frame_path"])
+
+# Carica video
+video_capture = cv2.VideoCapture(args["input"])
+fps = video_capture.get(cv2.CAP_PROP_FPS)
+total_frames = int(video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
+video_name = os.path.basename(args["input"])
+
+# Timer
+start_time = time.time()
+frame_number = 0
+
+print(f"\n📼 Video: {video_name}")
+print(f"🎞️  FPS: {fps:.2f} | Totale frame: {total_frames}\n")
+print("🚀 Avvio elaborazione...\n")
+
+# Loop sui frame
+while True:
+    ret, frame = video_capture.read()
+    if not ret:
+        print(f"\n✅ Elaborazione terminata.")
+        break
+
+    timestamp_sec = frame_number / fps
+    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+    face_locations = face_recognition.face_locations(rgb_frame, number_of_times_to_upsample=0, model="cnn")
+
+    print(f"[Frame {frame_number+1}/{total_frames}] ⏱ {timestamp_sec:.2f}s - Trovati {len(face_locations)} volti")
+
+    for face_location in face_locations:
+        top, right, bottom, left = face_location
+
+        # Estrai volto
+        face_image = rgb_frame[top:bottom, left:right]
+        pil_face = Image.fromarray(face_image)
+        face_filename = f"face_{int(timestamp_sec)}s_{frame_number}.jpg"
+        face_path = os.path.join(output_faces_dir, face_filename)
+        pil_face.save(face_path)
+
+        # Salva frame intero
+        frame_filename = f"frame_{int(timestamp_sec)}s_{frame_number}.jpg"
+        frame_path = os.path.join(output_frames_dir, frame_filename)
+        Image.fromarray(rgb_frame).save(frame_path)
+
+        # Log CSV
+        csv_writer.writerow([
+            video_name,
+            round(timestamp_sec, 2),
+            top, right, bottom, left,
+            face_path,
+            frame_path
+        ])
+
+    # Tempo stimato
+    elapsed = time.time() - start_time
+    avg_time_per_frame = elapsed / (frame_number + 1)
+    remaining_frames = total_frames - (frame_number + 1)
+    remaining_time = remaining_frames * avg_time_per_frame
+    print(f"⏳ Trascorsi: {elapsed:.1f}s | Stimati rimanenti: {remaining_time:.1f}s | Completamento: {((frame_number+1)/total_frames)*100:.2f}%\n")
+
+    frame_number += 1
+
+# Cleanup
+video_capture.release()
+csv_file.close()
+cv2.destroyAllWindows()
+print(f"\n📝 Log CSV salvato in: {log_csv_path}")
